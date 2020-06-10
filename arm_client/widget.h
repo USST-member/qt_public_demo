@@ -6,6 +6,10 @@
 #include <opencv2/highgui.hpp>
 #include <opencv2/imgproc.hpp>
 
+#include <opencv2/opencv.hpp>
+
+
+
 #include<QtSerialPort/QSerialPortInfo>
 #include <QtSerialPort/QSerialPort>
 
@@ -18,6 +22,9 @@
 #include<QTimer>
 #include<QDateTime>
 #include<QCharRef>
+
+#include"face.h"
+
 typedef struct {
     QString msg1; //身份证uid
     QString msg2; //时间
@@ -45,7 +52,7 @@ public:
     bool camera_init(void);
     Mat QImage_to_cvMat(QImage image);
     QImage cvMat_to_Image(const cv::Mat& mat);
-    bool process_image(Mat &mat);
+    bool process_image(Mat& inputImg, Ptr<ml::SVM> detecModel, Net model);
     void paintEvent(QPaintEvent *event);
     void write_image(QImage &image,QString s1,QString s2);
     void image_timeout(void);
@@ -72,8 +79,8 @@ public:
 public:
     Mat frame;//当前视频帧
     QImage *image;
-    QImage static_image;
-    CvCapture* capture;
+
+
     VideoCapture cap;
     QTimer* image_time;
     QTimer* tem_time;
@@ -97,6 +104,11 @@ public:
     bool udp_is_stated;
     Udp_msg msg;
     QString address;
+
+    QString model_path ;
+    QString config_path ;
+    Net face_detector;
+
 private:
     Ui::Widget *ui;
 };

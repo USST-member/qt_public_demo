@@ -2,12 +2,22 @@
 #include "ui_widget.h"
 
 
+#include<vector>
+#include<stdlib.h>
+#include<string>
+#include<iostream>
+#include<fstream>
+using namespace std;
+using namespace cv;
+using namespace cv::dnn;
+
+
 Widget::Widget(QWidget *parent)
     : QWidget(parent)
     , ui(new Ui::Widget)
 {
     ui->setupUi(this);
-    this->setWindowTitle(" ");
+    this->setWindowTitle("");
     this->msg.msg1="图书馆";
     this->tem_is_ok=false;
     this->tem_read=false;
@@ -19,7 +29,13 @@ Widget::Widget(QWidget *parent)
     udp_init();
     port_init();
     image_time=new QTimer(this);//用于抓取图像的时间间隔
-    image_time->start(200);
+    image_time->start(100);
+
+
+    model_path = "C:\\Users\\dongkangjia\\Desktop\\arm_client\\opencv_face_detector_uint8.pb";
+    config_path = "C:\\Users\\dongkangjia\\Desktop\\arm_client\\opencv_face_detector.pbtxt";
+
+    face_detector = readNetFromTensorflow(model_path.toStdString(), config_path.toStdString());
 
 
     tem_time=new QTimer(this);//用于抓取温度的时间间隔
@@ -36,6 +52,7 @@ Widget::Widget(QWidget *parent)
     /*接受数据之后的数据处理尚待解决*/
 
 }
+
 
 
 void Widget::tem_timeout(void)
@@ -85,7 +102,6 @@ bool Widget::tem_readData(void)
             if(tem.toInt()<30||tem.toInt())
             {
                 write_image(*image,"温度异常"," ");
-                this->static_image=*image;
                 this->is_use_static_image=true;
             }
             else
@@ -108,20 +124,12 @@ bool Widget::card_readData(void)
     uid_receiverBuf.append(buf.toHex());
 
     /*根据手册一帧长度为9，第一个字节为0x02,最后一个字节为0x03*/
-    if(uid_receiverBuf.at(0)==0x02&&uid_receiverBuf.size()==9&&uid_receiverBuf.at(2)==0x04&&uid_receiverBuf.at(8)==0x03)
-    {
-        uid=QString("%1, %2, %3,%4").arg(uid_receiverBuf.at(3).toStdWString()).arg(uid_receiverBuf.at(4).toStdWString()).arg(uid_receiverBuf.at(5).toStdWString()).arg(uid_receiverBuf.at(6).toStdWString());
-        this->msg.msg1=uid;
-        this->image_tem_is_start=true;//识别出卡号，开始图片处理和温度采集
-        qDebug()<<uid;
-        uid_receiverBuf.clear();
-        return true;
-    }
-    else
-    {
-        return false;
-    }
-
+    uid=uid_receiverBuf.at(0);
+    uid_receiverBuf.clear();
+    this->msg.msg1=uid;
+    this->image_tem_is_start=true;//识别出卡号，开始图片处理和温度采集
+    qDebug()<<uid;
+    return true;
 }
 
 /*两个串口的初始化*/
@@ -224,8 +232,28 @@ void Widget::image_timeout(void)
 bool Widget::camera_init()
 {
     /*设置为0系统摄像头，设置为1usb摄像头*/
-        this->cap=0;
-        capture = cvCaptureFromCAM(0);
+        cap.open(0);
+//        capture.set(CV_CAP_PROP_FRAME_WIDTH, 1080);//宽度
+//        capture.set(CV_CAP_PROP_FRAME_HEIGHT, 960);//高度
+//        capture.set(CV_CAP_PROP_FPS, 30);//帧数
+//        capture.set(CV_CAP_PROP_BRIGHTNESS, 1);//亮度 1
+//        capture.set(CV_CAP_PROP_CONTRAST,40);//对比度 40
+//        capture.set(CV_CAP_PROP_SATURATION, 50);//饱和度 50
+//        capture.set(CV_CAP_PROP_HUE, 50);//色调 50
+//        capture.set(CV_CAP_PROP_EXPOSURE, 50);//曝光 50
+        double a=cap.get(CAP_PROP_FRAME_WIDTH);
+        qDebug()<<a<<"采集图片的宽度";
+
+        double b=cap.get(CAP_PROP_FRAME_HEIGHT);
+        qDebug()<<b<<"采集图片的高度";
+
+        double c=cap.get(CAP_PROP_FPS);
+        qDebug()<<c<<"采集图片的帧数";
+
+        double d=cap.get(CAP_PROP_FOURCC);
+        qDebug()<<d<<"采集图片的格式";
+        cap.set(CAP_PROP_FPS, 0);
+
         if (!cap.isOpened()) // 检查打开是否成功
             return false;
         else
@@ -245,47 +273,144 @@ void Widget::write_image(QImage &image,QString s1,QString s2)
     pp.drawText(QPointF(20,50),QStringLiteral("口罩验证成功：%1").arg(s2));
     return;
 }
+
+bool face_mask_detectd(Mat faceImg, Ptr<ml::SVM> model)
+{
+    resize(faceImg, faceImg, Size(64, 128));
+    Mat face_gray;
+    cvtColor(faceImg, face_gray, COLOR_BGR2GRAY);
+    HOGDescriptor* hog = new HOGDescriptor;
+    vector<float> descriptors;
+    hog->compute(face_gray, descriptors);
+    float detection = model->predict(descriptors);
+    if (detection > 0)
+    {
+        return true;
+    }
+    else
+    {
+        return false;
+    }
+}
+
+bool faceDetected(Mat inputImg, Mat& outputFace, Rect &facebox, Net face_detector)
+{
+
+    Mat frame = inputImg;
+    Mat inputBlob = blobFromImage(frame, 1.0, Size(300, 300), Scalar(104.0, 177.0, 123.0), false);
+
+    face_detector.setInput(inputBlob);
+    Mat prob = face_detector.forward();
+
+    Mat detection(prob.size[2], prob.size[3], CV_32F, prob.ptr<float>());
+    float confidence_thresh = 0.5;
+    for (int row = 0; row < detection.rows; row++)
+    {
+        float confidence = detection.at<float>(row, 2);
+        if (confidence > confidence_thresh)
+        {
+            int classID = detection.at<float>(row, 1);
+            int notKnown = detection.at<float>(row, 0);
+            int top_left_x = detection.at<float>(row, 3) * frame.cols;
+            int top_left_y = detection.at<float>(row, 4) * frame.rows;
+            int button_right_x = detection.at<float>(row, 5) * frame.cols;
+            int button_right_y = detection.at<float>(row, 6) * frame.rows;
+            int width = button_right_x - top_left_x;
+            int height = button_right_y - top_left_y;
+            Rect box(top_left_x, top_left_y, width, height);
+            cout << classID << "," << notKnown << "," << confidence << endl;
+            if (box.x < 0 || box.y < 0)
+            {
+                box.x = 0;
+                box.y = 0;
+            }
+            else if (box.br().x > frame.cols || box.br().y > frame.rows)
+            {
+                box.width = frame.cols - box.x;
+                box.height = frame.rows - box.y;
+            }
+            else if (box.x + box.width > frame.cols)
+            {
+                box.width = frame.cols - box.x - 1;
+            }
+            else if (box.y + box.height > frame.rows)
+            {
+                box.height = frame.rows - box.y - 1;
+            }
+            else if (0 < box.width && 0 < box.height)
+            {
+                outputFace = frame(box).clone();
+                facebox = box;
+            }
+        }
+    }
+    if (outputFace.empty())
+    {
+        return false;
+    }
+    else
+    {
+        return true;
+    }
+}
+
+void FaceMaskDetect(Mat& inputImg, Ptr<ml::SVM> detecModel, Net model)
+{
+    Mat face;
+    Rect faceBox;
+    if (faceDetected(inputImg, face, faceBox, model))
+    {
+        bool a=face_mask_detectd(face, detecModel);
+        qDebug()<<a;
+        if (a)
+        {
+            rectangle(inputImg, faceBox, Scalar(0, 255, 0), 2, 8);
+            string output = "Face Mask";
+            putText(inputImg, output, Point(faceBox.br().x / 2, faceBox.br().y), FONT_HERSHEY_COMPLEX, 2, Scalar(0, 255, 0), 1, 8);
+        }
+        else
+        {
+            rectangle(inputImg, faceBox, Scalar(0, 0, 255), 2, 8);
+            string output = "Not Face Mask";
+            putText(inputImg, output, Point(faceBox.x, faceBox.y), FONT_HERSHEY_SIMPLEX, 0.6, Scalar(0, 0, 255), 2, 8);
+        }
+    }
+}
+
+
 /*重绘事件进行图片每一帧的显示*/
 void Widget::paintEvent(QPaintEvent *event)
 {
     /*采取每一帧图像*/
     cap >> frame;
-    if(image_tem_is_start==true)
-    {
-        if(process_image(frame)==true)//判断是否戴口罩
-        {
-            write_image(*image,"未识别","是");
-            if(tem_is_ok==true)
-            {
-                write_image(*image,tem,"是");
-                QDateTime current_date_time =QDateTime::currentDateTime();
-                this->msg.msg2=current_date_time.toString("yyyy.MM.dd hh:mm:ss.zzz ddd");
-                this->static_image=*image;
-                this->is_use_static_image=true;
-                /*打开门*/
-                this->open_door();
-            }
-        }
-    }
+
+//    if(image_tem_is_start==true)
+//    {
+//        if(process_image(frame,)==true)//判断是否戴口罩
+//        {
+//            write_image(*image,"未识别","是");
+//            if(tem_is_ok==true)
+//            {
+//                write_image(*image,tem,"是");
+//                QDateTime current_date_time =QDateTime::currentDateTime();
+//                this->msg.msg2=current_date_time.toString("yyyy.MM.dd hh:mm:ss.zzz ddd");
+//                this->static_image=*image;
+//                this->is_use_static_image=true;
+//                /*打开门*/
+//                this->open_door();
+//            }
+//        }
+//    }
+
+
+auto detecModel = ml::SVM::load("C:\\Users\\dongkangjia\\Desktop\\qt\\untitled1\\face_mask_detection.xml");
+
+
+    //FaceMaskDetect(frame, detecModel, face_detector);
+
 
     (*image)=cvMat_to_Image(frame);
-    // 图像不为空，则开始显示
-    if(is_use_static_image==true)
-    {
-        QPainter painter(this);
-        QRect frameRect=this->rect();
 
-        /*将界面矩形赋值给对象*/
-        frameRect.adjust(2,2,-2,-2);
-
-        //画背景和边框
-        painter.setPen(QColor(0,0,0));
-        painter.setBrush(QColor(255,255,255));
-        painter.drawRoundedRect(frameRect,2,2);
-        painter.drawImage(frameRect,static_image);
-    }
-    else
-    {
         QPainter painter(this);
         QRect frameRect=this->rect();
 
@@ -297,38 +422,53 @@ void Widget::paintEvent(QPaintEvent *event)
         painter.setBrush(QColor(255,255,255));
         painter.drawRoundedRect(frameRect,2,2);
         painter.drawImage(frameRect,*image);
-    }
+
 }
 
 
 /*进行图片处理*/
-bool Widget::process_image(Mat &mat)
+bool Widget::process_image(Mat& inputImg, Ptr<ml::SVM> detecModel, Net model)
 {
-
-    return true;
+    Mat face;
+    Rect faceBox;
+    if (faceDetected(inputImg, face, faceBox, model))
+    {
+        if (face_mask_detectd(face, detecModel))
+        {
+            rectangle(inputImg, faceBox, Scalar(0, 255, 0), 2, 8);
+            string output = "Face Mask";
+            putText(inputImg, output, Point(faceBox.br().x / 2, faceBox.br().y), FONT_HERSHEY_COMPLEX, 2, Scalar(0, 255, 0), 1, 8);
+        }
+        else
+        {
+            rectangle(inputImg, faceBox, Scalar(0, 0, 255), 2, 8);
+            string output = "Not Face Mask";
+            putText(inputImg, output, Point(faceBox.x, faceBox.y), FONT_HERSHEY_SIMPLEX, 0.6, Scalar(0, 0, 255), 2, 8);
+        }
+    }
 }
 
 //把QImage转化为cv：：mat
-Mat Widget::QImage_to_cvMat(QImage image)
-{
-    cv::Mat mat;
-     switch(image.format())
-     {
-     case QImage::Format_ARGB32:
-     case QImage::Format_RGB32:
-     case QImage::Format_ARGB32_Premultiplied:
-         mat = cv::Mat(image.height(), image.width(), CV_8UC4, (void*)image.bits(), image.bytesPerLine());
-         break;
-     case QImage::Format_RGB888:
-         mat = cv::Mat(image.height(), image.width(), CV_8UC3, (void*)image.bits(), image.bytesPerLine());
-         cv::cvtColor(mat, mat, CV_BGR2RGB);
-         break;
-     case QImage::Format_Indexed8:
-         mat = cv::Mat(image.height(), image.width(), CV_8UC1, (void*)image.bits(), image.bytesPerLine());
-         break;
-     }
-     return mat;
-}
+//Mat Widget::QImage_to_cvMat(QImage image)
+//{
+//    cv::Mat mat;
+//     switch(image.format())
+//     {
+//     case QImage::Format_ARGB32:
+//     case QImage::Format_RGB32:
+//     case QImage::Format_ARGB32_Premultiplied:
+//         mat = cv::Mat(image.height(), image.width(), CV_8UC4, (void*)image.bits(), image.bytesPerLine());
+//         break;
+//     case QImage::Format_RGB888:
+//         mat = cv::Mat(image.height(), image.width(), CV_8UC3, (void*)image.bits(), image.bytesPerLine());
+//         cv::cvtColor(mat, mat, CV_BGR2RGB);
+//         break;
+//     case QImage::Format_Indexed8:
+//         mat = cv::Mat(image.height(), image.width(), CV_8UC1, (void*)image.bits(), image.bytesPerLine());
+//         break;
+//     }
+//     return mat;
+//}
 
 //cv::mat转化为QImage
 QImage Widget::cvMat_to_Image(const cv::Mat& mat)
